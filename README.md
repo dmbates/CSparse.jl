@@ -37,19 +37,19 @@ csi cs_lsolve (const cs *L, double *x)
 becomes
 ```julia
 ## solve Lx=b where x and b are dense.  x=b on input, solution on output.
-function cs_lsolve!{T}(L::SparseMatrixCSC{T}, x::StridedVector{T})
+function js_lsolve!{T}(L::SparseMatrixCSC{T}, x::StridedVector{T})
     m,n = size(L)
     if m != n error("Matrix L is $m by $n and should be square") end
     if length(x) != n error("Dimension mismatch") end
     Lp = L.colptr; Li = L.rowval; Lx = L.nzval
     for j in 1:n
         x[j] /= Lx[Lp[j]]
-        for p in Lp[j]:(Lp[j + 1] - 1)
+        for p in (Lp[j] + 1):(Lp[j+1] - 1)
             x[Li[p]] -= Lx[p] * x[j]
         end
     end
     x
 end
 
-cs_lsolve{T}(L::SparseMatrixCSC{T}, x::StridedVector{T}) = cs_lsolve!(L, copy(x))
+js_lsolve{T}(L::SparseMatrixCSC{T}, x::StridedVector{T}) = js_lsolve!(L, copy(x))
 ```

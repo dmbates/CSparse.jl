@@ -10,7 +10,10 @@ libraries developed by
 The Julia functions stay very close to the C originals.  Most of the
 differences are in changing 0-based indexing to 1-based indexing and
 in using the Julia ```CompositeKind``` rather than a pointer to a C
-```struct```.  For example, the C function ```cs_lsolve```
+```struct```.  This also allows for checking consistency of
+dimensions.
+
+For example, the C function ```cs_lsolve```
 ```C
 #include "cs.h"
 /* solve Lx=b where x and b are dense.  x=b on input, solution on output. */
@@ -34,13 +37,11 @@ csi cs_lsolve (const cs *L, double *x)
 becomes
 ```julia
 ## solve Lx=b where x and b are dense.  x=b on input, solution on output.
-function lsolve!{T}(L::SparseMatrixCSC{T}, x::StridedVector{T})
+function cs_lsolve!{T}(L::SparseMatrixCSC{T}, x::StridedVector{T})
     m,n = size(L)
     if m != n error("Matrix L is $m by $n and should be square") end
     if length(x) != n error("Dimension mismatch") end
-    Lp  = L.colptr
-    Li  = L.rowval
-    Lx  = L.nzval
+    Lp = L.colptr; Li = L.rowval; Lx = L.nzval
     for j in 1:n
         x[j] /= Lx[Lp[j]]
         for p in Lp[j]:(Lp[j + 1] - 1)
@@ -50,5 +51,5 @@ function lsolve!{T}(L::SparseMatrixCSC{T}, x::StridedVector{T})
     x
 end
 
-lsolve{T}(L::SparseMatrixCSC{T}, x::StridedVector{T}) = lsolve!(L, copy(x))
+cs_lsolve{T}(L::SparseMatrixCSC{T}, x::StridedVector{T}) = cs_lsolve!(L, copy(x))
 ```

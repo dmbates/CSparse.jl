@@ -429,13 +429,7 @@ function cs_counts(A::SparseMatrixCSC{Float64,Int}, col::Bool)
     coupt = ccall(csp_counts, Ptr{Int}, (Ptr{Void}, Ptr{Int}, Ptr{Int}, Int),
                   iostr.data, etrpt, pospt, col)
     _jl_convert_to_1_based_indexing!(A)
-    etree = pointer_to_array(etrpt, (n,)) + 1
-    post  = pointer_to_array(pospt, (n,)) + 1
-    conts = pointer_to_array(coupt, (n,))
-    c_free(etrpt)
-    c_free(pospt)
-    c_free(coupt)
-    etree, post, conts
+    pointer_to_array(etrpt, (n,)) + 1, pointer_to_array(pospt, (n,)) + 1,pointer_to_array(coupt, (n,))
 end
 
 cs_counts(A::SparseMatrixCSC{Float64,Int}) = cs_counts(A, false)

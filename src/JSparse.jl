@@ -339,3 +339,104 @@ end
 #const _jl_libcsparse = dlopen("libcsparse.so")
 #const cs_pvec = dlsym(_jl_libcsparse, :cs_pvec)
 #const cs_print = dlsym(_jl_libcsparse, :cs_print)
+
+## Interface to the CSparse and CXSparse libraries
+const csp = dlopen("/home/bates/build/julia/deps/SuiteSparse-4.0.2/CSparse/Lib/libcsparse.so")
+
+const csp_amd    = dlsym(csp, :cs_amd)
+const csp_counts = dlsym(csp, :cs_counts)
+const csp_dfree  = dlsym(csp, :cs_dfree)
+const csp_etree  = dlsym(csp, :cs_etree)
+const csp_nfree  = dlsym(csp, :cs_nfree)
+const csp_post   = dlsym(csp, :cs_post)
+const csp_sfree  = dlsym(csp, :cs_sfree)
+const csp_spfree = dlsym(csp, :cs_spfree)
+
+load("strpack")
+
+## Copied from extras/suitesparse.jl
+function _jl_convert_to_0_based_indexing!(S::SparseMatrixCSC)
+    for i=1:(S.colptr[end]-1); S.rowval[i] -= 1; end
+    for i=1:length(S.colptr); S.colptr[i] -= 1; end
+    return S
+end
+
+function _jl_convert_to_1_based_indexing!(S::SparseMatrixCSC)
+    for i=1:length(S.colptr); S.colptr[i] += 1; end
+    for i=1:(S.colptr[end]-1); S.rowval[i] += 1; end
+    return S
+end
+
+_jl_convert_to_0_based_indexing(S) = _jl_convert_to_0_based_indexing!(copy(S))
+_jl_convert_to_1_based_indexing(S) = _jl_convert_to_1_based_indexing!(copy(S))
+
+type cs                                 # the CSparse cs struct
+    nzmax::Int
+    m::Int
+    n::Int
+    p::Ptr{Int}
+    i::Ptr{Int}
+    x::Ptr{Float64}
+    nz::Int
+end
+
+function cs(A::SparseMatrixCSC{Float64,Int})
+    if A.colptr[1] != 0 error("Sparse matrix must be in 0-based indexing") end
+    i = A.rowval
+    cs(length(i), A.m, A.n, pointer(A.colptr), pointer(i), pointer(A.nzval), -1)
+end
+
+function cs_etree(A::SparseMatrixCSC{Float64,Int}, col::Bool)
+    n = size(A, 2)
+    iostr = IOString()
+    _jl_convert_to_0_based_indexing!(A)
+    pack(iostr, cs(A))
+    ept   = ccall(csp_etree, Ptr{Int}, (Ptr{Void}, Int), iostr.data, col)
+    _jl_convert_to_1_based_indexing!(A)
+    popt  = ccall(csp_post, Ptr{Int}, (Ptr{Int}, Int), ept, n)
+    etree = pointer_to_array(ept, (n,)) + 1
+    post  = pointer_to_array(popt, (n,)) + 1
+    c_free(ept)
+    c_free(popt)
+    etree, post
+end
+
+cs_etree(A::SparseMatrixCSC{Float64,Int}) = cs_etree(A, false)
+
+## order 1:Chol, 2:LU, 3:QR
+function cs_amd(A::SparseMatrixCSC{Float64,Int}, order::Int)
+    order = min(max(1, order), 3)
+    n = size(A, 2)
+    iostr = IOString()
+    _jl_convert_to_0_based_indexing!(A)
+    pack(iostr, cs(A))
+    ppt   = ccall(csp_amd, Ptr{Int}, (Int, Ptr{Void}), order, iostr.data)
+    _jl_convert_to_1_based_indexing!(A)
+    p = pointer_to_array(ppt, (n,)) + 1
+    c_free(ppt)
+    p
+end
+
+cs_amd(A::SparseMatrixCSC{Float64,Int}) = cs_amd(A, 1)
+
+function cs_counts(A::SparseMatrixCSC{Float64,Int}, col::Bool)
+    n = size(A, 2)
+    iostr = IOString()
+    _jl_convert_to_0_based_indexing!(A)
+    pack(iostr, cs(A))
+    etrpt = ccall(csp_etree, Ptr{Int}, (Ptr{Void}, Int), iostr.data, col)
+    pospt = ccall(csp_post, Ptr{Int}, (Ptr{Int}, Int), etrpt, n)
+    coupt = ccall(csp_counts, Ptr{Int}, (Ptr{Void}, Ptr{Int}, Ptr{Int}, Int),
+                  iostr.data, etrpt, pospt, col)
+    _jl_convert_to_1_based_indexing!(A)
+    etree = pointer_to_array(etrpt, (n,)) + 1
+    post  = pointer_to_array(pospt, (n,)) + 1
+    conts = pointer_to_array(coupt, (n,))
+    c_free(etrpt)
+    c_free(pospt)
+    c_free(coupt)
+    etree, post, conts
+end
+
+cs_counts(A::SparseMatrixCSC{Float64,Int}) = cs_counts(A, false)
+

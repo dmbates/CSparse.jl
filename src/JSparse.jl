@@ -342,7 +342,7 @@ end
 #const cs_print = dlsym(_jl_libcsparse, :cs_print)
 
 ## Interface to the CXSparse library
-const csp = dlopen("libcxsparse.so")
+const csp = dlopen("/home/bates/build/julia/deps/SuiteSparse-4.0.2/CXSparse/Lib/libcxsparse.so")
 
 load("strpack")
 
@@ -375,28 +375,102 @@ end
 function cs{Tv<:Union(Float64,Complex128),Ti<:Union(Int32,Int64)}(A::SparseMatrixCSC{Tv,Ti})
     if A.colptr[1] != 0 error("Sparse matrix must be in 0-based indexing") end
     cs{Tv,Ti}(convert(Ti,A.colptr[end]), convert(Ti,A.m), convert(Ti,A.n),
-              pointer(A.colptr), pointer(A.rowval), pointer(A.nzval), -one(Ti))
+              pointer(A.colptr), pointer(A.rowval), pointer(A.nzval), convert(Ti, -1))
 end
 
-for (amd, etree, post, counts, norm, prt, vtyp, ityp) in
-    ((:cs_ci_amd, :cs_ci_etree, :cs_ci_post, :cs_ci_counts, :cs_ci_norm,
-      :cs_ci_print, :Complex128, :Int32),
-     (:cs_di_amd, :cs_di_etree, :cs_di_post, :cs_di_counts, :cs_di_norm,
-      :cs_di_print, :Float64, :Int32),
-     (:cs_cl_amd, :cs_cl_etree, :cs_cl_post, :cs_cl_counts, :cs_cl_norm,
-      :cs_cl_print, :Complex128, :Int64),
-     (:cs_dl_amd, :cs_dl_etree, :cs_dl_post, :cs_dl_counts, :cs_dl_norm,
-      :cs_dl_print, :Float64, :Int64))
+## Primary CXSparse-based functions, cs_cholsol, cs_lusol, cs_print, cs_qrsol
+for (cholsol, lusol, prt, qrsol, vtyp, ityp) in
+    ((:cs_ci_cholsol, :cs_ci_lusol, :cs_ci_print, :cs_ci_qrsol, :Complex128, :Int32),
+     (:cs_di_cholsol, :cs_di_lusol, :cs_di_print, :cs_di_qrsol, :Float64, :Int32),
+     (:cs_cl_cholsol, :cs_cl_lusol, :cs_cl_print, :cs_cl_qrsol, :Complex128, :Int64),
+     (:cs_dl_cholsol, :cs_dl_lusol, :cs_dl_print, :cs_dl_qrsol, :Float64, :Int64))
+    @eval begin
+        ## A is symmetric but only triu(A) is passed
+        function cs_cholsol!(A::SparseMatrixCSC{$vtyp,$ityp}, b::Vector{$vtyp}, order::Integer)
+            if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
+            m,n = size(A)
+            if m != n || n != length(b) error("Dimension mismatch") end
+            st = ccall(dlsym(csp, $(string(cholsol))), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}),
+                       order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data, b)
+            _jl_convert_to_1_based_indexing!(A)
+            if st == 0 error("Failure in cholsol") end
+            b
+        end
+
+        ## A must be square
+        function cs_lusol!(A::SparseMatrixCSC{$vtyp,$ityp}, b::Vector{$vtyp}, order::Integer, tol::Real)
+            if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
+            m,n = size(A)
+            if m != n || n != length(b) error("Dimension mismatch") end
+            st = ccall(dlsym(csp, $(string(lusol))), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}, Float64),
+                       order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data, b, tol)
+            _jl_convert_to_1_based_indexing!(A)
+            if st == 0 error("Failure in lusol") end
+            b
+        end
+
+        function cs_print(A::SparseMatrixCSC{$vtyp,$ityp}, brief::Bool)
+            ccall(dlsym(csp, $(string(prt))), Void, (Ptr{Void}, $ityp),
+                  pack(cs(_jl_convert_to_0_based_indexing!(A))).data, brief)
+            _jl_convert_to_1_based_indexing!(A)
+            None
+        end
+
+        ## Overdetermined least squares system when m >= n
+        function cs_qrsol!(A::SparseMatrixCSC{$vtyp,$ityp}, b::Vector{$vtyp}, order::Integer)
+            if (order != 0 && order != 3) error("order = $order but must be 0 or 3") end
+            if size(A, 1) != length(b) error("Dimension mismatch") end
+            st = ccall(dlsym(csp, $(string(qrsol))), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}),
+                       order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data, b)
+            _jl_convert_to_1_based_indexing!(A)
+            if st == 0 error("Failure in qrsol") end
+            b
+        end
+    end
+end
+
+## default ordering for cs_cholsol is 1 (i.e. amd(A))
+cs_cholsol!{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T}) = cs_cholsol!(A, b, 1)
+function cs_cholsol{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T}, ord::Integer)
+    cs_cholsol!(A, copy(b), ord)
+end
+function cs_cholsol{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T})
+    cs_cholsol(A, copy(b), 1)
+end
+
+## default ordering for cs_lusol is 2.
+## There are other cases with order=1 but I haven't yet deciphered them
+cs_lusol!{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T}) = cs_lusol!(A, b, 2, 1.)
+function cs_lusol{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T}, ord::Integer)
+    cs_lusol!(A, copy(b), ord, ord == 1 ? 0.001 : 1.)
+end
+function cs_lusol{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T})
+    cs_lusol!(A, copy(b), 2, 1.)
+end
+
+cs_qrsol!{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T}) = cs_lusol!(A, b, 3)
+function cs_qrsol{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T}, ord::Integer)
+    cs_qrsol!(A, copy(b), ord)
+end
+function cs_qrsol{T<:Union(Float64,Complex128)}(A::SparseMatrixCSC{T}, b::Vector{T})
+    cs_qrsol(A, copy(b), 3)
+end
+
+for (amd, etree, post, counts, norm, vtyp, ityp) in
+    ((:cs_ci_amd, :cs_ci_etree, :cs_ci_post, :cs_ci_counts, :cs_ci_norm, :Complex128, :Int32),
+     (:cs_di_amd, :cs_di_etree, :cs_di_post, :cs_di_counts, :cs_di_norm, :Float64, :Int32),
+     (:cs_cl_amd, :cs_cl_etree, :cs_cl_post, :cs_cl_counts, :cs_cl_norm, :Complex128, :Int64),
+     (:cs_dl_amd, :cs_dl_etree, :cs_dl_post, :cs_dl_counts, :cs_dl_norm, :Float64, :Int64))
     @eval begin
         ## Approximate minimal degree ordering
-        function cs_amd(A::SparseMatrixCSC{$vtyp,$ityp}, order::$ityp)
+        function cs_amd(A::SparseMatrixCSC{$vtyp,$ityp}, order::Integer)
             if !(0 < order < 4) error("Valid values of order are 1:Chol, 2:LU, 3:QR") end
             ppt   = ccall(dlsym(csp, $(string(amd))), Ptr{$ityp}, ($ityp, Ptr{Void}),
                           order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data)
             _jl_convert_to_1_based_indexing!(A)
             pointer_to_array(ppt, (size(A,2),)) + 1
         end
-        
+
         ## cs_counts returns all the information from cs_etree plus the column counts
         function cs_counts(A::SparseMatrixCSC{$vtyp,$ityp}, col::Bool)
             n = size(A, 2)
@@ -412,7 +486,7 @@ for (amd, etree, post, counts, norm, prt, vtyp, ityp) in
             (pointer_to_array(etrpt, (n,)) + 1, pointer_to_array(pospt, (n,)) + 1,
              pointer_to_array(coupt, (n,)))
         end
-
+        
         ## returns the elimination tree and the post-ordering permutation
         function cs_etree(A::SparseMatrixCSC{$vtyp,$ityp}, col::Bool)
             ept = ccall(dlsym(csp, $(string(etree))), Ptr{$ityp}, (Ptr{Void}, $ityp),
@@ -431,13 +505,6 @@ for (amd, etree, post, counts, norm, prt, vtyp, ityp) in
             _jl_convert_to_1_based_indexing!(A)
             res
         end
-
-        function cs_print(A::SparseMatrixCSC{$vtyp,$ityp}, brief::Bool)
-            ccall(dlsym(csp, $(string(prt))), Void, (Ptr{Void}, $ityp),
-                        pack(cs(_jl_convert_to_0_based_indexing!(A))).data, brief)
-            _jl_convert_to_1_based_indexing!(A)
-            None
-        end
     end
 end
 
@@ -445,3 +512,45 @@ cs_amd(A::SparseMatrixCSC) = cs_amd(A, 1)
 cs_counts(A::SparseMatrixCSC) = cs_counts(A, false)
 cs_etree(A::SparseMatrixCSC) = cs_etree(A, false)
 cs_print(A::SparseMatrixCSC) = cs_print(A, true)
+
+type cs_symb{Tv<:Union(Float64,Complex128),Ti<:Union(Int32,Int64)} # the CXSparse cs_symbolic struct
+    pinv::Ptr{Ti}
+    q::Ptr{Ti}
+    parent::Ptr{Ti}
+    cp::Ptr{Ti}
+    leftmost::Ptr{Ti}
+    m2::Ti
+    lnz::Float64
+    unz::Float64
+end
+
+type cs_num{Tv<:Union(Float64,Complex128),Ti<:Union(Int32,Int64)} # the CXSparse cs_numeric struct
+    L::Ptr{cs{Tv,Ti}}
+    U::Ptr{cs{Tv,Ti}}
+    pinv::Ptr{Ti}
+    B::Ptr{Float64}
+end
+
+for (chol, qr, schol, sqr, symperm, vtyp, ityp) in
+    ((:cs_ci_chol, :cs_ci_qr, :cs_ci_schol, :cs_ci_sqr, :cs_ci_symperm, :Complex128, :Int32),
+     (:cs_di_chol, :cs_di_qr, :cs_di_schol, :cs_di_sqr, :cs_di_symperm, :Float64, :Int32),
+     (:cs_cl_chol, :cs_cl_qr, :cs_cl_schol, :cs_cl_sqr, :cs_cl_symperm, :Complex128, :Int64),
+     (:cs_dl_chol, :cs_dl_qr, :cs_dl_schol, :cs_dl_sqr, :cs_dl_symperm, :Float64, :Int64))
+    @eval begin
+        ## Numeric Cholesky factorization
+        function cs_chol(A::SparseMatrixCSC{$vtyp,$ityp}, S::cs_symb{$vtyp,$ityp})
+            pt  = ccall(dlsym(csp, $(string(chol))), Ptr{Uint8}, (Ptr{Void}, Ptr{Void}),
+                        pack(cs(_jl_convert_to_0_based_indexing!(A))).data, pack(S))
+            _jl_convert_to_1_based_indexing!(A)
+        end
+        ## Symbolic Cholesky factorization
+        function cs_schol(A::SparseMatrixCSC{$vtyp,$ityp}, order::Integer)
+            if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
+            pt  = ccall(dlsym(csp, $(string(schol))), Ptr{Uint8}, ($ityp, Ptr{Void}),
+                        order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data)
+            _jl_convert_to_1_based_indexing!(A)
+            ## FIXME calculate the size dynamically
+            unpack(IOString(pointer_to_array(pt, (64,))), cs_symb{$vtyp,$ityp})
+        end
+    end
+end

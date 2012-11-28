@@ -539,18 +539,18 @@ for (chol, qr, schol, sqr, symperm, vtyp, ityp) in
     @eval begin
         ## Numeric Cholesky factorization
         function cs_chol(A::SparseMatrixCSC{$vtyp,$ityp}, S::cs_symb{$vtyp,$ityp})
-            pt  = ccall(dlsym(csp, $(string(chol))), Ptr{Uint8}, (Ptr{Void}, Ptr{Void}),
+            pt  = ccall(($(string(chol)),csp), Ptr{Uint8}, (Ptr{Void}, Ptr{Void}),
                         pack(cs(_jl_convert_to_0_based_indexing!(A))).data, pack(S))
             _jl_convert_to_1_based_indexing!(A)
         end
         ## Symbolic Cholesky factorization
         function cs_schol(A::SparseMatrixCSC{$vtyp,$ityp}, order::Integer)
             if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
-            pt  = ccall(dlsym(csp, $(string(schol))), Ptr{Uint8}, ($ityp, Ptr{Void}),
+            pt  = ccall(($(string(schol)),csp), Ptr{Uint8}, ($ityp, Ptr{Void}),
                         order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data)
             _jl_convert_to_1_based_indexing!(A)
-            ## FIXME calculate the size dynamically
-            unpack(IOString(pointer_to_array(pt, (64,))), cs_symb{$vtyp,$ityp})
+            outtyp = cs_symb{$vtyp,$ityp}
+            unpack(IOString(pointer_to_array(pt, (sum(map(sizeof, outtyp.types)),))), outtyp)
         end
     end
 end

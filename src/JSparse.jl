@@ -1,4 +1,4 @@
-require("sparse")
+require("linalg_sparse")
 require("strpack")
 
 ## Replace calls to these simple functions by negation, abs, etc.
@@ -317,10 +317,13 @@ end
 
 js_utsolve{T}(U::SparseMatrixCSC{T}, x::StridedVector{T}) = js_utsolve!(U, copy(x))
 
-## Use the home directory for Julia, once I discover how to obtain it
-const TestMats = "/home/bates/build/julia/deps/SuiteSparse-4.0.2/CXSparse/Matrix/"
-function testmat(nm::ASCIIString)
-    fd = open(file_path(TestMats, nm), "r")
+const pkg_dir = get(ENV,"JULIA_PKGDIR",path_expand("~/.julia"))
+const matrix_directory = file_path(pkg_dir, "JSparse", "Matrix")
+
+available_testmats() = for nm in readdir(matrix_directory) println(nm) end
+
+function testmat{S <: String}(nm::S)
+    fd = open(file_path(matrix_directory, nm), "r")
     r1 = split(readline(fd))
     rows = [int32(r1[1])]
     cols = [int32(r1[2])]
@@ -337,25 +340,16 @@ function testmat(nm::ASCIIString)
     sparse(rows + one(Int32), cols + one(Int32), nzs)
 end
 
-#const _jl_libcsparse = dlopen("libcsparse.so")
-#const cs_pvec = dlsym(_jl_libcsparse, :cs_pvec)
-#const cs_print = dlsym(_jl_libcsparse, :cs_print)
-
-## Interface to the CXSparse library
-const csp = dlopen("/home/bates/build/julia/deps/SuiteSparse-4.0.2/CXSparse/Lib/libcxsparse.so")
-
-load("strpack")
-
 ## Copied from extras/suitesparse.jl
 function _jl_convert_to_0_based_indexing!(S::SparseMatrixCSC)
-    for i in 1:length(S.rowval) S.rowval[i] -= 1; end
-    for p in 1:length(S.colptr) S.colptr[p] -= 1; end
+    for i in 1:length(S.rowval) S.rowval[i] -= 1 end
+    for p in 1:length(S.colptr) S.colptr[p] -= 1 end
     S
 end
 
 function _jl_convert_to_1_based_indexing!(S::SparseMatrixCSC)
-    for i in 1:length(S.rowval) S.rowval[i] += 1; end
-    for p in 1:length(S.colptr) S.colptr[p] += 1; end
+    for i in 1:length(S.rowval) S.rowval[i] += 1 end
+    for p in 1:length(S.colptr) S.colptr[p] += 1 end
     S
 end
 
@@ -390,7 +384,7 @@ for (cholsol, lusol, prt, qrsol, vtyp, ityp) in
             if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
             m,n = size(A)
             if m != n || n != length(b) error("Dimension mismatch") end
-            st = ccall(dlsym(csp, $(string(cholsol))), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}),
+            st = ccall(($(string(cholsol)),"libcxsparse"), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}),
                        order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data, b)
             _jl_convert_to_1_based_indexing!(A)
             if st == 0 error("Failure in cholsol") end
@@ -402,7 +396,7 @@ for (cholsol, lusol, prt, qrsol, vtyp, ityp) in
             if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
             m,n = size(A)
             if m != n || n != length(b) error("Dimension mismatch") end
-            st = ccall(dlsym(csp, $(string(lusol))), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}, Float64),
+            st = ccall(($(string(lusol)),"libcxsparse"), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}, Float64),
                        order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data, b, tol)
             _jl_convert_to_1_based_indexing!(A)
             if st == 0 error("Failure in lusol") end
@@ -410,7 +404,7 @@ for (cholsol, lusol, prt, qrsol, vtyp, ityp) in
         end
 
         function cs_print(A::SparseMatrixCSC{$vtyp,$ityp}, brief::Bool)
-            ccall(dlsym(csp, $(string(prt))), Void, (Ptr{Void}, $ityp),
+            ccall(($(string(prt)),"libcxsparse"), Void, (Ptr{Void}, $ityp),
                   pack(cs(_jl_convert_to_0_based_indexing!(A))).data, brief)
             _jl_convert_to_1_based_indexing!(A)
             None
@@ -420,7 +414,7 @@ for (cholsol, lusol, prt, qrsol, vtyp, ityp) in
         function cs_qrsol!(A::SparseMatrixCSC{$vtyp,$ityp}, b::Vector{$vtyp}, order::Integer)
             if (order != 0 && order != 3) error("order = $order but must be 0 or 3") end
             if size(A, 1) != length(b) error("Dimension mismatch") end
-            st = ccall(dlsym(csp, $(string(qrsol))), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}),
+            st = ccall(($(string(qrsol)),"libcxsparse"), $ityp, ($ityp, Ptr{Void}, Ptr{$vtyp}),
                        order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data, b)
             _jl_convert_to_1_based_indexing!(A)
             if st == 0 error("Failure in qrsol") end
@@ -465,7 +459,7 @@ for (amd, etree, post, counts, norm, vtyp, ityp) in
         ## Approximate minimal degree ordering
         function cs_amd(A::SparseMatrixCSC{$vtyp,$ityp}, order::Integer)
             if !(0 < order < 4) error("Valid values of order are 1:Chol, 2:LU, 3:QR") end
-            ppt   = ccall(dlsym(csp, $(string(amd))), Ptr{$ityp}, ($ityp, Ptr{Void}),
+            ppt   = ccall(($(string(amd)),"libcxsparse"), Ptr{$ityp}, ($ityp, Ptr{Void}),
                           order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data)
             _jl_convert_to_1_based_indexing!(A)
             pointer_to_array(ppt, (size(A,2),)) + 1
@@ -475,11 +469,11 @@ for (amd, etree, post, counts, norm, vtyp, ityp) in
         function cs_counts(A::SparseMatrixCSC{$vtyp,$ityp}, col::Bool)
             n = size(A, 2)
             cspk = pack(cs(_jl_convert_to_0_based_indexing!(A)))
-            etrpt = ccall(dlsym(csp, $(string(etree))), Ptr{$ityp},
+            etrpt = ccall(($(string(etree)),"libcxsparse"), Ptr{$ityp},
                           (Ptr{Void}, $ityp), cspk.data, col)
-            pospt = ccall(dlsym(csp, $(string(post))), Ptr{$ityp},
+            pospt = ccall(($(string(post)),"libcxsparse"), Ptr{$ityp},
                           (Ptr{$ityp}, $ityp), etrpt, n)
-            coupt = ccall(dlsym(csp, $(string(counts))), Ptr{$ityp},
+            coupt = ccall(($(string(counts)),"libcxsparse"), Ptr{$ityp},
                           (Ptr{Void}, Ptr{$ityp}, Ptr{$ityp}, $ityp),
                           cspk.data, etrpt, pospt, col)
             _jl_convert_to_1_based_indexing!(A)
@@ -489,18 +483,18 @@ for (amd, etree, post, counts, norm, vtyp, ityp) in
         
         ## returns the elimination tree and the post-ordering permutation
         function cs_etree(A::SparseMatrixCSC{$vtyp,$ityp}, col::Bool)
-            ept = ccall(dlsym(csp, $(string(etree))), Ptr{$ityp}, (Ptr{Void}, $ityp),
+            ept = ccall(($(string(etree)),"libcxsparse"), Ptr{$ityp}, (Ptr{Void}, $ityp),
                         pack(cs(_jl_convert_to_0_based_indexing!(A))).data, col)
             _jl_convert_to_1_based_indexing!(A)
             n = size(A, 2)
-            popt  = ccall(dlsym(csp, $(string(post))), Ptr{$ityp},
+            popt  = ccall(($(string(post)),"libcxsparse"), Ptr{$ityp},
                           (Ptr{$ityp}, $ityp), ept, n)
             pointer_to_array(ept, (n,)) + 1, pointer_to_array(popt, (n,)) + 1
         end
         
         ## 1-norm of a sparse matrix (better to use js_norm, this is just for illustration)
         function cs_norm(A::SparseMatrixCSC{$vtyp,$ityp})
-            res = ccall(dlsym(csp, $(string(norm))), Float64, (Ptr{Void},),
+            res = ccall(($(string(norm)),"libcxsparse"), Float64, (Ptr{Void},),
                         pack(cs(_jl_convert_to_0_based_indexing!(A))).data)
             _jl_convert_to_1_based_indexing!(A)
             res
@@ -539,18 +533,33 @@ for (chol, qr, schol, sqr, symperm, vtyp, ityp) in
     @eval begin
         ## Numeric Cholesky factorization
         function cs_chol(A::SparseMatrixCSC{$vtyp,$ityp}, S::cs_symb{$vtyp,$ityp})
-            pt  = ccall(($(string(chol)),csp), Ptr{Uint8}, (Ptr{Void}, Ptr{Void}),
-                        pack(cs(_jl_convert_to_0_based_indexing!(A))).data, pack(S))
+            pt  = ccall(($(string(chol)),"libcxsparse"), Ptr{Uint8}, (Ptr{Void}, Ptr{Void}),
+                        pack(cs(_jl_convert_to_0_based_indexing!(A))).data, pack(S).data)
             _jl_convert_to_1_based_indexing!(A)
+            outtyp = cs_num{$vtyp,$ityp}
+            unpack(IOString(pointer_to_array(pt, (sum(map(sizeof, outtyp.types)),))), outtyp)
         end
         ## Symbolic Cholesky factorization
         function cs_schol(A::SparseMatrixCSC{$vtyp,$ityp}, order::Integer)
             if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
-            pt  = ccall(($(string(schol)),csp), Ptr{Uint8}, ($ityp, Ptr{Void}),
+            pt  = ccall(($(string(schol)),"libcxsparse"), Ptr{Uint8}, ($ityp, Ptr{Void}),
                         order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data)
+            _jl_convert_to_1_based_indexing!(A)
+            outtyp = cs_symb{$vtyp,$ityp}
+            unpack(IOString(pointer_to_array(pt, (sum(map(sizeof, outtyp.types)),))), outtyp)
+        end
+        ## Symbolic QR decomposition
+        function cs_sqr(A::SparseMatrixCSC{$vtyp,$ityp}, order::Integer)
+            if !(0 <= order <= 3) error("order = $order is not in the range 0 to 3") end
+            pt  = ccall(($(string(sqr)),"libcxsparse"), Ptr{Uint8}, ($ityp, Ptr{Void}, $ityp),
+                        order, pack(cs(_jl_convert_to_0_based_indexing!(A))).data, 1)
             _jl_convert_to_1_based_indexing!(A)
             outtyp = cs_symb{$vtyp,$ityp}
             unpack(IOString(pointer_to_array(pt, (sum(map(sizeof, outtyp.types)),))), outtyp)
         end
     end
 end
+
+cs_schol(A::SparseMatrixCSC) = cs_schol(A, 1)
+cs_sqr(A::SparseMatrixCSC) = cs_sqr(A, 3)
+

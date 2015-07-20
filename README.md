@@ -1,11 +1,11 @@
-JSparse.jl
+CSparse.jl
 ==========
 
-A Julia implementation of functions in the
+A [Julia](http://julialang.org) implementation of some of the functions in the
 [CSparse](http://www.cise.ufl.edu/research/sparse/CSparse) and
 [CXSparse](http://www.cise.ufl.edu/research/sparse/CXSparse/)
 libraries developed by
-[Tim Davis](http://www.cise.ufl.edu/~davis/welcome.html). 
+[Tim Davis](http://engineering.tamu.edu/cse/people/davis-tim)
 
 The Julia functions stay very close to the C originals.  Most of the
 differences are in changing 0-based indexing to 1-based indexing and

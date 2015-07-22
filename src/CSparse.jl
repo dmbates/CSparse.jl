@@ -1,17 +1,20 @@
-require("linalg_sparse")
-require("strpack")
+#require("linalg_sparse")
+#require("strpack")
+module CSparse
+
+export
+    testmat
+
+include("testmat.jl")
+include("simplicialchol.jl")
+include("trisolvers.jl")
+
 
 ## Replace calls to these simple functions by negation, abs, etc.
 JS_FLIP(i::Integer) = -i    # CSparse must flip about -1 because 0 is a valid index
 JS_UNFLIP(i::Integer) = (i <= 0) ? -i : i        # or abs(i)
 JS_MARKED(w::Vector{Integer},j::Integer) = w[j] <= 0
 JS_MARK(w::Vector{Integer},j::Integer) = w[j] = -w[j]
-
-type CholSymb{T<:Union(Int32,Int64)}    # symbolic Cholesky
-    pinv::Vector{T}                     # fill reducing perm for Chol
-    cp::Vector{T}                       # column pointers
-    parent::Vector{T}                   # elimination tree
-end
 
 function js_chol{Tv,Ti}(A::SparseMatrixCSC{Tv,Ti}, S::CholSymb{Ti})
     n = size(A,2)
@@ -25,9 +28,9 @@ function js_chol{Tv,Ti}(A::SparseMatrixCSC{Tv,Ti}, S::CholSymb{Ti})
     x  = Array(Tv, n)                   # Tv workspace
     for k in 1:n                        # compute L[k,:] for L*L' = C
         ## Nonzero pattern of L[k,:]
-        top = cs_ereach (C, k, parent, s, c) # find pattern of L(k,:)
-        x[k] = 0                             # x[1:k] is now zero
-        for p in Cp[k]:(Cp[k+1]-1)           # x = full(triu(C(:,k)))
+        top = cs_ereach(C, k, parent, s, c) # find pattern of L(k,:)
+        x[k] = 0                            # x[1:k] is now zero
+        for p in Cp[k]:(Cp[k+1]-1)          # x = full(triu(C(:,k)))
             if (Ci[p] <= k) x[Ci[p]] = Cx[p] end
         end
         d = x[k]                        # d = C[k,k]
@@ -63,7 +66,7 @@ function js_dfs{T}(j::Integer, G::SparseMatrixCSC{T}, top::Integer,
     head = 0; Gp = G.colptr; Gi = G.rowval
     xi[0] = j                        # initialize the recursion stack
     while (head >= 0)
-        j = xi [head]     # get j from the top of the recursion stack
+        j = xi[head]       # get j from the top of the recursion stack
         jnew = pinv[j]
         if !JS_MARKED(Gp, j)
             JS_MARK(Gp, j)              # mark node j as visited
@@ -72,7 +75,7 @@ function js_dfs{T}(j::Integer, G::SparseMatrixCSC{T}, top::Integer,
         done = 1            # node j done if no unvisited neighbors
         p2 = (jnew < 0) ? 0 : JS_UNFLIP(Gp[jnew+1])
         for p in pstack[head]:(p2-1)    # examine all neighbors of j
-            i = Gi [p]                # consider neighbor node i
+            i = Gi[p]                   # consider neighbor node i
             if (JS_MARKED(Gp, i)) continue end # skip visited node i
             pstack[head] = p      # pause depth-first search of node j
             xi[++head] = i        # start dfs at node i
@@ -86,33 +89,6 @@ function js_dfs{T}(j::Integer, G::SparseMatrixCSC{T}, top::Integer,
         end
     end
     top
-end
-
-# find nonzero pattern of Cholesky L(k,1:k-1) using etree and triu(A(:,k))
-function js_ereach{Tv,Ti}(A::SparseMatrixCSC{Tv,Ti}, k::Integer, parent::Vector{Ti},
-                          s::Vector{Ti}, w::Vector{Ti})
-    m,n = size(A); Ap = A.colptr; Ai = A.rowval
-    top = n
-    JS_MARK(w, k)                       # mark node k as visited
-    for p in Ap[k]:(Ap[k+1] - 1)
-        i = Ai [p]               # A(i,k) is nonzero
-        if i > k continue end    # only use upper triangular part of A
-        len = 0
-        while JS_MARKED(w,i)            # traverse up etree
-            s[len] = i                  # L(k,i) is nonzero
-            len += 1
-            JS_MARK(w,i)                # mark i as visited
-            i = parent [i]
-        end
-        while (len > 0)
-            top -= 1
-            len -= 1
-            s[top] = s[len]             # push path onto stack
-        end
-    end
-    for p in top:(n - 1) JS_MARK(w,s[p]) end # unmark all nodes
-    JS_MARK(w,k)                             # unmark node k
-    top                      # s [top..n-1] contains pattern of L(k,:)
 end
 
 # compute the etree of A (using triu(A), or A'A without forming A'A
@@ -141,49 +117,6 @@ end
 
 js_etree(A::SparseMatrixCSC) = js_etree(A, false)
 
-## solve Lx=b where x and b are dense.  x=b on input, solution on output.
-function js_lsolve!{T}(L::SparseMatrixCSC{T}, x::StridedVector{T})
-    m,n = size(L)
-    if m != n error("Matrix L is $m by $n and should be square") end
-    if length(x) != n error("Dimension mismatch") end
-    Lp = L.colptr; Li = L.rowval; Lx = L.nzval
-    for j in 1:n
-        x[j] /= Lx[Lp[j]]
-        for p in (Lp[j] + 1):(Lp[j+1] - 1)
-            x[Li[p]] -= Lx[p] * x[j]
-        end
-    end
-    x
-end
-
-js_lsolve{T}(L::SparseMatrixCSC{T}, x::StridedVector{T}) = js_lsolve!(L, copy(x))
-
-## solve L'x=b where x and b are dense.  x=b on input, solution on output.
-function js_ltsolve!{T}(L::SparseMatrixCSC{T}, x::StridedVector{T})
-    m,n = size(L)
-    if m != n error("Matrix L is $m by $n and should be square") end
-    if length(x) != n error("Dimension mismatch") end
-    Lp = L.colptr; Li = L.rowval; Lx = L.nzval
-    for j in n:-1:1
-        for p in (Lp[j] + 1):(Lp[j+1] - 1)
-            x[j] -= Lx[p] * x[Li[p]]
-        end
-        x[j] /= Lx[Lp[j]]
-    end
-    x
-end
-
-js_ltsolve{T}(L::SparseMatrixCSC{T}, x::StridedVector{T}) = js_ltsolve!(L, copy(x))
-
-## 1-norm of a sparse matrix = max (sum (abs (A))), largest column sum
-function js_norm(A::SparseMatrixCSC)
-    Ap  = A.colptr; Ax  = A.nzval
-    nrm = zero(eltype(A))
-    for j in 1:size(A,2)
-        nrm = max(nrm, sum(abs(Ax[Ap[j]:(Ap[j+1]-1)])))
-    end
-    nrm
-end
 
 ## post order a forest
 function js_post{T<:Union(Int32,Int64)}(parent::Vector{T})
@@ -221,29 +154,6 @@ function js_reach{Tv,Ti}(G::SparseMatrixCSC{Tv,Ti}, B::SparseMatrixCSC{Tv,Ti},
     top
 end
 
-## solve Gx=b(:,k), where G is either upper (lo=0) or lower (lo=1) triangular
-function js_spsolve{T}(G::SparseMatrixCSC{T}, B::SparseMatrixCSC{T}, k::Integer,
-                    xi::Vector{Integer}, x::Vector{T}, pinv::Vector{Integer}, lo::Bool)
-    Gp = G.colptr; Gi = G.rowval; Gx = G.nzval; n = size(G, 2)
-    Bp = B.colptr; Bi = B.rowval; Bx = B.nzval
-    ## must have reach return a 1-based index
-    top = js_reach (G, B, k, xi, pinv)  # xi[top..n-1]=Reach(B(:,k))
-    ## get xi from reach?
-    for p in top:n x[xi[p]] = 0. end    # clear x
-    for p in Bp[k]:(Bp[k+1]-1) x[Bi[p]] = Bx[p] end # scatter B
-    for px in top:n
-        j = xi[px]                       # x[j] is nonzero
-        J = pinv[j]                      # j maps to col J of G
-        if J < 0 continue end            # column J is empty
-        x[j] /= Gx[lo? Gp[J]: Gp[J+1]-1] # x(j) /= G[j,j]
-        p = lo ? (Gp[J]+1) : Gp[J]       # lo: L[j,j] 1st entry
-        q = lo ? Gp[J+1] : (Gp[J+1]-1)   # up: U[j,j] last entry
-        for pp in p:q
-            x[Gi[pp]] -= Gx[pp] * x[j]   # x[i] -= G[i,j] * x[j]
-        end
-    end
-    top
-end
 
 # depth-first search and postorder of a tree rooted at node j
 function js_tdfs{T<:Union(Int32,Int64)}(j::Integer, k::Integer, head::Vector{T},
@@ -281,63 +191,6 @@ function js_transpose{Tv,Ti}(A::SparseMatrixCSC{Tv,Ti})
         Cx[q] = Ax[p]
     end
     SparseMatrixCSC(n, m, Cp, Ci, Cx)
-end
-
-## solve Ux=b where x and b are dense.  x=b on input, solution on output.
-function js_usolve!{T}(U::SparseMatrixCSC{T}, x::StridedVector{T})
-    m,n = size(U)
-    if m != n error("Matrix U is $m by $n and should be square") end
-    if length(x) != n error("Dimension mismatch") end
-    Up = U.colptr; Ui = U.rowval; Ux = U.nzval
-    for j in n:-1:1
-        x[j] /= Ux[Up[j+1]-1]
-        for p in Up[j]:(Up[j+1]-2)
-            x[Ui[p]] -= Ux[p] * x[j]
-        end
-    end
-    x
-end
-
-js_usolve{T}(U::SparseMatrixCSC{T}, x::StridedVector{T}) = js_usolve!(U, copy(x))
-
-## solve U'x=b where x and b are dense.  x=b on input, solution on output.
-function js_utsolve!{T}(U::SparseMatrixCSC{T}, x::StridedVector{T})
-    m,n = size(U)
-    if m != n error("Matrix U is $m by $n and should be square") end
-    if length(x) != n error("Dimension mismatch") end
-    Up = U.colptr; Ui = U.rowval; Ux = U.nzval
-    for j in 1:n
-        for p in Up[j]:(Up[j+1]-2)
-            x[j] -= Ux[p] * x[Ui[p]]
-            end
-        x[j] /= Ux[Up[j+1]-1]
-    end
-    x
-end
-
-js_utsolve{T}(U::SparseMatrixCSC{T}, x::StridedVector{T}) = js_utsolve!(U, copy(x))
-
-const pkg_dir = get(ENV,"JULIA_PKGDIR",path_expand("~/.julia"))
-const matrix_directory = file_path(pkg_dir, "JSparse", "Matrix")
-
-available_testmats() = for nm in readdir(matrix_directory) println(nm) end
-
-function testmat{S <: String}(nm::S)
-    fd = open(file_path(matrix_directory, nm), "r")
-    r1 = split(readline(fd))
-    rows = [int32(r1[1])]
-    cols = [int32(r1[2])]
-    cmpx = length(r1) == 4
-    if !cmpx && length(r1) != 3 error("$(file_path(TestMats, nm)) is not a CXSparse test matrix") end
-    nzs = cmpx ? [float(r1[3]) + im*float(r1[4])] : [float(r1[3])]
-    for rr = EachLine(fd)
-        vv = split(rr)
-        push(rows, int32(vv[1]))
-        push(cols, int32(vv[2]))
-        push(nzs, cmpx ? float(vv[3]) + im*float(vv[4]) : float(vv[3]))
-    end
-    close(fd)
-    sparse(rows + one(Int32), cols + one(Int32), nzs)
 end
 
 ## Copied from extras/suitesparse.jl
@@ -563,3 +416,4 @@ end
 cs_schol(A::SparseMatrixCSC) = cs_schol(A, 1)
 cs_sqr(A::SparseMatrixCSC) = cs_sqr(A, 3)
 
+end

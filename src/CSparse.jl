@@ -1,13 +1,13 @@
-#require("linalg_sparse")
-#require("strpack")
 module CSparse
 
-export
-    testmat
+    using Metis
 
-include("testmat.jl")
-include("simplicialchol.jl")
-include("trisolvers.jl")
+    export testmat
+
+    include("utilities.jl")
+    include("testmat.jl")
+    include("simplicialchol.jl")
+    include("trisolvers.jl")
 
 
 ## Replace calls to these simple functions by negation, abs, etc.

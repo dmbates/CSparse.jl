@@ -1,8 +1,9 @@
 ## solve Lx=b where x and b are dense.  x=b on input, solution on output.
 function Base.A_ldiv_B!{T}(L::LowerTriangular{T,SparseMatrixCSC{T}}, x::StridedVector{T})
-    n = Base.LinAlg.chksquare(L)
+    Ld = L.data
+    n = Base.LinAlg.chksquare(Ld)
     length(x) == n || throw(DimensionMismatch())
-    Lp = L.data.colptr; Li = L.data.rowval; Lx = L.data.nzval
+    Lp = Ld.colptr; Li = rowvals(Ld); Lx = nonzeros(Ld)
     for j in 1:n
         x[j] /= Lx[Lp[j]]
         for p in (Lp[j] + 1):(Lp[j+1] - 1)
@@ -14,10 +15,11 @@ end
 
 ## solve L'x=b where x and b are dense.  x=b on input, solution on output.
 function Ac_ldiv_B!{T}(L::LowerTriangular{T,SparseMatrixCSC{T}}, x::StridedVector{T})
-    n = Base.LinAlg.chksquare(L)
+    Ld = L.data
+    n = Base.LinAlg.chksquare(Ld)
     length(x) == n || throw(DimensionMismatch())
-    Lp = L.data.colptr; Li = L.data.rowval; Lx = L.data.nzval
-    for j in n:-1:1
+    Lp = Ld.colptr; Li = rowvals(Ld); Lx = nonzeros(Ld)
+    for j in reverse(1:n)
         for p in (Lp[j] + 1):(Lp[j+1] - 1)
             x[j] -= Lx[p] * x[Li[p]]
         end
@@ -58,10 +60,10 @@ end
 
 ## 1-norm of a sparse matrix = max (sum (abs (A))), largest column sum
 function js_norm(A::SparseMatrixCSC)
-    Ax  = A.nzval
+    Ax  = nonzeros(A)
     nrm = zero(eltype(A))
     for j in 1:size(A,2)
-        nrm = max(nrm, sumabs(Ax[nzrange(A,j)]))
+        nrm = max(nrm, sumabs(sub(Ax,nzrange(A,j))))
     end
     nrm
 end

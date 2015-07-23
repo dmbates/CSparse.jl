@@ -2,10 +2,10 @@
 Symbolic Cholesky factorization.  The fill-reducing permutation
 is calculated externally, for example using Metis.NodeND
 """->
-type CholSymb{T<:Union(Int32,Int64)}    # symbolic Cholesky
-    pinv::Vector{T}                     # fill reducing perm for Chol
-    cp::Vector{T}                       # column pointers
-    parent::Vector{T}                   # elimination tree
+type CholSymb{T<:Integer}    # symbolic Cholesky
+    pinv::Vector{T}          # fill reducing perm for Chol
+    cp::Vector{T}            # column pointers
+    parent::Vector{T}        # elimination tree
 end
 
 @doc """
@@ -20,38 +20,90 @@ function ereach{Tv,Ti}(A::Symmetric{Tv,SparseMatrixCSC{Tv,Ti}}, k, parent)
     Ai = rowvals(Ad)
     s = IntSet([k])                     # non-zeros in row k of L
     v = IntSet([k])                     # visited nodes
-    for p in nzrange(Ad,k)
-        i = Ai[p]                       # A(i,k) is nonzero
+    for i in sub(Ai,nzrange(Ad,k))
         if i > k
             continue                    # use only upper triangle
         end
         while !in(i,v)                  # traverse up etree
             push!(s,i)
             push!(v,i)
+            i = parent[i]
         end
     end
     collect(s)
 end
 
-function Metis.metisform{Tv,Ti}(S::Symmetric{Tv,SparseMatrixCSC{Tv,Ti}})
-    up = S.uplo == 'U'
-    Sd = S.data
-    n = size(Sd,2)
-    I = sizehint!(Cint[],2*nnz(Sd))
-    J = sizehint!(Cint[],2*nnz(Sd))
-    Si = rowvals(Sd)
-    for j in 1:n, i in sub(Si,nzrange(Sd,j))
-        if (up ? (i < j) : (i > j))
-            push!(I,i)
-            push!(J,j)
-            push!(I,j)
-            push!(J,i)
+@doc """
+Determine the pattern of the sparse Cholesky factor of C
+
+Returns the elimination tree and a lower triangular sparse matrix filled with ones.
+"""->
+function cholpattern{Tv,Ti}(C::Symmetric{Tv,SparseMatrixCSC{Tv,Ti}})
+    C.uplo == 'U' || error("cholpattern requires the upper triangle of C to be stored")
+    n = size(C,2)
+    parent = etree(C)
+    Cd = C.data
+    Ci = rowvals(Cd)
+    cp = ones(Ti,n+1)
+    rv = Ti[]
+    s = sizehint!(IntSet([]),n) # nonzeros on column j of L' (row j of L)
+    v = sizehint!(IntSet([]),n) # visited nodes
+    for j in 1:n
+        empty!(s)
+        empty!(v)
+        push!(s,j)
+        push!(v,j)
+        for i in sub(Ci,nzrange(Cd,j))
+            i > j && break              # upper triangle only
+            while !in(i,v)
+                push!(s,i)
+                push!(v,i)
+                i = parent[i]
+            end
         end
+        append!(rv,collect(s))
+        cp[j+1] += convert(Ti,length(rv))
     end
-    sp = sparse(I,J,1.)
-    convert(Int32,n),sp.colptr .- one(Int32),rowvals(sp) .- one(Int32)
+    parent,LowerTriangular(transpose(SparseMatrixCSC(n,n,cp,rv,ones(cp[n+1]))))
 end
 
+## write a function that copies the lower triangle of the symmetric matrix to L
+
+function LLcholfact{Tv,Ti}(C::Symmetric{Tv,SparseMatrixCSC{Tv,Ti}})
+    parent,L = cholpattern(C)
+    n = size(C,2)
+    Ct = ltri!(transpose(C.data)) # for now evaluate the lower triangle
+    Cti = rowvals(Ct)
+    Ctx = nonzeros(Ct)                 # these values will be modified
+    Ld = L.data
+    Li = rowvals(Ld)
+    Lx = fill!(0.,nonzeros(Ld))         # initialize contents of L to zero
+    for k in 1:n
+        ## spread values of k'th column of A into k'th column of L
+        Akr = nzrange(Ct,k)
+        Lkr = nzrange(Ld,k)
+        Lki = sub(Li,Lkr)
+        Lkx = sub(Lx,Lkr)
+        if length(Akr) == length(Lkr)
+            copy!(Lkx,sub(Ax,Akr))
+        else
+            Aki = sub(Cti,Akr)
+            Akx = sub(Ctx,Akr)
+            for i in eachindex(Aki)
+                Lkx[searchsortedfirst(Lki,Aki[i])] = Akx[i]
+            end
+        end
+    end
+end
+                           
+function cholsymb{Tv,Ti}(S::Symmetric{Tv,SparseMatrixCSC{Tv,Ti}})
+    _,pinv = Metis.nodeND(S)
+    C = symperm(S,pinv)
+    parent,post = etree(C,true)
+    cp = colcounts(C,parent,post)
+    CholSymb(pinv,convert(Vector{Ti},cp),parent)
+end
+                         
 function cholfact{Tv,Ti}(A::Symmetric{Tv,SparseMatrixCSC{Tv,Ti}}, S::CholSymb{Ti})
     n = size(A,2)
     cp = S.cp; pinv = S.pinv; parent = S.parent
